@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import pandas as pd
-from src.ts_tools import BaseForecaster
+from src.tstools import BaseForecaster
 from tqdm import tqdm
 from copy import deepcopy
 import numpy as np

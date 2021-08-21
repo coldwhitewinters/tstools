@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 import pmdarima as pm
-from src.ts_tools import BaseForecaster
+from src.tstools import BaseForecaster
 from tqdm import tqdm
 
 

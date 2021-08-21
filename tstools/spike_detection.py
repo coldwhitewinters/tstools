@@ -48,5 +48,5 @@ def remove_spikes(y, window=5, alpha=3, delta=1, drop=False):
     if drop:
         return y[~detect_spikes(y, window, alpha, delta)].copy()
     yc = y.copy()
-    yc[detect_spikes(y, window, alpha, delta)] = np.nan
+    yc[detect_spikes(yc, window, alpha, delta)] = np.nan
     return yc

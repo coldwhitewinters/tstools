@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from ipywidgets import interact, widgets
-from src.ts_tools.metrics import error, mae
+from src.tstools.metrics import error, mae
 from tqdm import tqdm
 
 
