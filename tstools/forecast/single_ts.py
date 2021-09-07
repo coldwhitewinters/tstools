@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
+from tstools.typing import ScikitModel
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,14 +8,11 @@ import pandas as pd
 import pmdarima as pm
 from tqdm import tqdm
 
+from sklearn.preprocessing import StandardScaler
+
 
 @dataclass
-class Univariate:
-    time_col: str
-    target_col: str
-    regressor_cols: Optional[List[str]]
-    freq: str
-
+class SingleTS:
     def get_indexed_series(self, data, col):
         ts = data.set_index(self.time_col).asfreq(self.freq)[col].copy()
         return ts
@@ -51,6 +49,24 @@ class Univariate:
             hfcst.append(fcst)
         return hfcst
 
+
+@dataclass
+class Univariate(SingleTS):
+    time_col: str
+    target_col: str
+    regressor_cols: Optional[List[str]]
+    freq: str
+
+    def __post_init__(self):
+        if not isinstance(self.time_col, str):
+            raise Exception("time_col should be a string")
+        if not isinstance(self.target_col, str):
+            raise Exception("target_col should be a string")
+        if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
+            raise Exception("regressors_cols should be a List or None")
+        if not isinstance(self.freq, str):
+            raise Exception("freq should be a string")
+
     def plot_fcst(self, fcst, style="-"):
         target_fcst = self.target_col + "_fcst"
         target_lower = self.target_col + "_lower"
@@ -70,15 +86,23 @@ class Univariate:
         fcst_ex = fcst.merge(data[[self.time_col, self.target_col]], on="date")
         return fcst_ex
 
-    def error_table(self, data, hfcst):
-        hfcst_ex = [self.extend_fcst(data, fcst) for fcst in hfcst]
-        errors = [fcst[self.target_col] - fcst[self.target_col + "_fcst"] for fcst in hfcst_ex]
-        err_table = pd.concat(errors, axis=1)
-        return err_table
 
-    def performance_metrics(self, data, hfcst, metrics=None, agg=None):
-        pass
+@dataclass
+class Multivariate(SingleTS):
+    time_col: str
+    target_col: List[str]
+    regressor_cols: Optional[List[str]]
+    freq: str
 
+    def __post_init__(self):
+        if not isinstance(self.time_col, str):
+            raise Exception("time_col should be a string")
+        if not isinstance(self.target_col, list):
+            raise Exception("target_col should be a list")
+        if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
+            raise Exception("regressors_cols should be a List or None")
+        if not isinstance(self.freq, str):
+            raise Exception("freq should be a string")
 
 
 @dataclass
@@ -87,7 +111,7 @@ class Naive(Univariate):
         self.data = data.copy()
         self.last = data[self.target_col].iloc[-1]
         return self
-        
+
     def predict(self, future):
         fh = len(future)
         future["y_fcst"] = np.array([self.last] * fh)
@@ -98,7 +122,7 @@ class Naive(Univariate):
 class AutoARIMA(Univariate):
     arima_params: dict = field(default_factory=dict)
     fit_params: dict = field(default_factory=dict)
-    
+
     def fit(self, data):
         self.data = data.copy()
         self.model = pm.AutoARIMA(**self.arima_params)
@@ -109,8 +133,9 @@ class AutoARIMA(Univariate):
             X = self.get_indexed_series(data, self.regressor_cols)
         self.model.fit(y, X, **self.fit_params)
         return self
-    
+
     def predict(self, future, conf_int=None):
+        future = future.copy()
         fh = len(future)
         if self.regressor_cols is None:
             X = None
@@ -124,4 +149,52 @@ class AutoARIMA(Univariate):
             future[self.target_col + "_fcst"] = y_fcst
             future[self.target_col + "_lower"] = y_conf[:, 0]
             future[self.target_col + "_upper"] = y_conf[:, 1]
+        return future
+
+
+@dataclass
+class Regression(Univariate):
+    model: ScikitModel = None
+    scale_regressors: bool = True
+    n_lags: int = 0
+
+    def build_lags(self, ts):
+        lags = pd.concat([ts.shift(i) for i in range(self.n_lags + 1)], axis=1).dropna()
+        lags.columns = [ts.name + f"_lag_{i}" for i in range(self.n_lags + 1)]
+        return lags
+
+    def build_target(self, ts):
+        target = ts.shift(-1).dropna()
+        target.name = "target"
+        return target
+
+    def fit(self, data):
+        self.data = data.copy()
+        ts = self.get_indexed_series(data, self.target_col)
+        extra_regressors = self.get_indexed_series(data, self.regressor_cols)
+        lags = self.build_lags(ts)
+        target = self.build_target(ts)
+        df = pd.concat([target, lags, extra_regressors], axis=1, join="inner")
+        y = df.iloc[:, 0].to_numpy()
+        X = df.iloc[:, 1:].to_numpy()
+        if self.scale_regressors:
+            self.scaler = StandardScaler()
+            X = self.scaler.fit_transform(X)
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, future):
+        future = future.copy()
+        fh = len(future)
+        ts = self.get_indexed_series(self.data, self.target_col).to_numpy()
+        extra_regressors = self.get_indexed_series(future, self.regressor_cols).to_numpy()
+        for i, row in future.iterrows():
+            lags = ts[-self.n_lags - 1:].reshape(1, -1)
+            reg = extra_regressors[i].reshape(1, -1)
+            X = np.concatenate([lags, reg], axis=1)
+            if self.scale_regressors:
+                X = self.scaler.transform(X)
+            y_pred = self.model.predict(X)
+            ts = np.append(ts, [y_pred])
+        future[self.target_col + "_fcst"] = ts[-fh:]
         return future
