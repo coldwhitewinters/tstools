@@ -1,14 +1,13 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
-from tstools.typing import ScikitModel
+from tstools.typing import ScikitModel, ScikitScaler
+from tstools.metrics import mae as metric_mae
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pmdarima as pm
 from tqdm import tqdm
-
-from sklearn.preprocessing import StandardScaler
 
 
 @dataclass
@@ -49,6 +48,33 @@ class SingleTS:
             hfcst.append(fcst)
         return hfcst
 
+    def score_cv(self, val, hfcst, metrics=None, agg=None):
+        if metrics is None:
+            metrics = [metric_mae]
+        hfcst_ex = [fcst.merge(val[[self.time_col, self.target_col]], on="date") for fcst in hfcst]
+        scores_list = []
+        for fcst in hfcst_ex:
+            y = self.get_indexed_series(fcst, self.target_col)
+            y_fcst = self.get_indexed_series(fcst, self.target_col + "_fcst")
+            step_scores = dict()
+            for metric in metrics:
+                step_scores[metric.__name__] = metric(y, y_fcst)
+            scores_list.append(pd.Series(step_scores))
+        scores_df = pd.DataFrame(scores_list)
+        if agg is not None:
+            return scores_df.apply(agg, axis=0)
+        return scores_df
+
+    def score(self, val, fcst, metrics=None):
+        fcst_ex = fcst.merge(val[[self.time_col, self.target_col]], on="date")
+        y = self.get_indexed_series(fcst_ex, self.target_col)
+        y_fcst = self.get_indexed_series(fcst_ex, self.target_col + "_fcst")
+        scores_dict = dict()
+        for metric in metrics:
+            scores_dict[metric.__name__] = metric(y, y_fcst)
+        scores_df = pd.DataFrame(scores_dict, index=[0])
+        return scores_df
+
 
 @dataclass
 class Univariate(SingleTS):
@@ -67,24 +93,24 @@ class Univariate(SingleTS):
         if not isinstance(self.freq, str):
             raise Exception("freq should be a string")
 
-    def plot_fcst(self, fcst, style="-"):
+    def plot_fcst(self, fcst, test=None, plot_history=True, style="-"):
         target_fcst = self.target_col + "_fcst"
         target_lower = self.target_col + "_lower"
         target_upper = self.target_col + "_upper"
         f, ax = plt.subplots()
-        y = self.get_indexed_series(self.data, self.target_col)
+        if plot_history:
+            y = self.get_indexed_series(self.data, self.target_col)
+            y.plot(ax=ax, style=style, color="black")
+        if test is not None:
+            y_test = self.get_indexed_series(test, self.target_col)
+            y_test.plot(ax=ax, style=style, color="orange")
         y_fcst = self.get_indexed_series(fcst, target_fcst)
-        y.plot(ax=ax, style=style)
-        y_fcst.plot(ax=ax, style=style)
+        y_fcst.plot(ax=ax, style=style, color="blue")
         if target_lower in fcst.columns and target_upper in fcst.columns:
             y_lower = self.get_indexed_series(fcst, target_lower)
             y_upper = self.get_indexed_series(fcst, target_upper)
             ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
         plt.legend()
-
-    def extend_fcst(self, data, fcst):
-        fcst_ex = fcst.merge(data[[self.time_col, self.target_col]], on="date")
-        return fcst_ex
 
 
 @dataclass
@@ -114,7 +140,7 @@ class Naive(Univariate):
 
     def predict(self, future):
         fh = len(future)
-        future["y_fcst"] = np.array([self.last] * fh)
+        future[self.target_col + "_fcst"] = np.array([self.last] * fh)
         return future
 
 
@@ -152,8 +178,8 @@ class AutoARIMA(Univariate):
 
 @dataclass
 class Regression(Univariate):
-    model: ScikitModel = None
-    scale_regressors: bool = True
+    model: Optional[ScikitModel] = None
+    scaler: Optional[ScikitScaler] = None
     n_lags: Optional[int] = None
 
     def build_lags(self, ts):
@@ -179,10 +205,11 @@ class Regression(Univariate):
         df = pd.concat([target, lags, extra_regressors], axis=1, join="inner")
         y = df.iloc[:, 0].to_numpy()
         X = df.iloc[:, 1:].to_numpy()
-        if self.scale_regressors:
-            self.scaler = StandardScaler()
+        if self.scaler is not None:
             X = self.scaler.fit_transform(X)
         self.model.fit(X, y)
+        self.X_fit = X.copy()
+        self.y_fit = y.copy()
         return self
 
     def predict(self, future):
@@ -201,9 +228,13 @@ class Regression(Univariate):
                 reg = extra_regressors[i].reshape(1, -1)
                 X_components.append(reg)
             X = np.concatenate(X_components, axis=1)
-            if self.scale_regressors:
+            if self.scaler is not None:
                 X = self.scaler.transform(X)
             y_pred = self.model.predict(X)
             ts = np.append(ts, [y_pred])
         future[self.target_col + "_fcst"] = ts[-fh:]
         return future
+
+    def residuals(self):
+        resid = self.y_fit - self.model.predict(self.X_fit)
+        return resid
