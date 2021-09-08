@@ -127,9 +127,8 @@ class AutoARIMA(Univariate):
         self.data = data.copy()
         self.model = pm.AutoARIMA(**self.arima_params)
         y = self.get_indexed_series(data, self.target_col)
-        if self.regressor_cols is None:
-            X = None
-        else:
+        X = None
+        if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
         self.model.fit(y, X, **self.fit_params)
         return self
@@ -137,9 +136,8 @@ class AutoARIMA(Univariate):
     def predict(self, future, conf_int=None):
         future = future.copy()
         fh = len(future)
-        if self.regressor_cols is None:
-            X = None
-        else:
+        X = None
+        if self.regressor_cols is not None:
             X = self.get_indexed_series(future, self.regressor_cols)
         if conf_int is None:
             y_fcst = self.model.predict(n_periods=fh, X=X)
@@ -156,7 +154,7 @@ class AutoARIMA(Univariate):
 class Regression(Univariate):
     model: ScikitModel = None
     scale_regressors: bool = True
-    n_lags: int = 0
+    n_lags: Optional[int] = None
 
     def build_lags(self, ts):
         lags = pd.concat([ts.shift(i) for i in range(self.n_lags + 1)], axis=1).dropna()
@@ -171,8 +169,12 @@ class Regression(Univariate):
     def fit(self, data):
         self.data = data.copy()
         ts = self.get_indexed_series(data, self.target_col)
-        extra_regressors = self.get_indexed_series(data, self.regressor_cols)
-        lags = self.build_lags(ts)
+        lags = None
+        extra_regressors = None
+        if self.n_lags is not None:
+            lags = self.build_lags(ts)
+        if self.regressor_cols is not None:
+            extra_regressors = self.get_indexed_series(data, self.regressor_cols)
         target = self.build_target(ts)
         df = pd.concat([target, lags, extra_regressors], axis=1, join="inner")
         y = df.iloc[:, 0].to_numpy()
@@ -187,11 +189,18 @@ class Regression(Univariate):
         future = future.copy()
         fh = len(future)
         ts = self.get_indexed_series(self.data, self.target_col).to_numpy()
-        extra_regressors = self.get_indexed_series(future, self.regressor_cols).to_numpy()
+        extra_regressors = None
+        if self.regressor_cols is not None:
+            extra_regressors = self.get_indexed_series(future, self.regressor_cols).to_numpy()
         for i, row in future.iterrows():
-            lags = ts[-self.n_lags - 1:].reshape(1, -1)
-            reg = extra_regressors[i].reshape(1, -1)
-            X = np.concatenate([lags, reg], axis=1)
+            X_components = []
+            if self.n_lags is not None:
+                lags = np.flip(ts[-self.n_lags - 1:].reshape(1, -1))
+                X_components.append(lags)
+            if extra_regressors is not None:
+                reg = extra_regressors[i].reshape(1, -1)
+                X_components.append(reg)
+            X = np.concatenate(X_components, axis=1)
             if self.scale_regressors:
                 X = self.scaler.transform(X)
             y_pred = self.model.predict(X)
