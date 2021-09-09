@@ -8,6 +8,9 @@ import numpy as np
 import pandas as pd
 import pmdarima as pm
 from tqdm import tqdm
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA as ARIMAModel
+from statsmodels.tsa.exponential_smoothing.ets import ETSModel
 
 
 @dataclass
@@ -48,33 +51,6 @@ class SingleTS:
             hfcst.append(fcst)
         return hfcst
 
-    def score_cv(self, val, hfcst, metrics=None, agg=None):
-        if metrics is None:
-            metrics = [metric_mae]
-        hfcst_ex = [fcst.merge(val[[self.time_col, self.target_col]], on="date") for fcst in hfcst]
-        scores_list = []
-        for fcst in hfcst_ex:
-            y = self.get_indexed_series(fcst, self.target_col)
-            y_fcst = self.get_indexed_series(fcst, self.target_col + "_fcst")
-            step_scores = dict()
-            for metric in metrics:
-                step_scores[metric.__name__] = metric(y, y_fcst)
-            scores_list.append(pd.Series(step_scores))
-        scores_df = pd.DataFrame(scores_list)
-        if agg is not None:
-            return scores_df.apply(agg, axis=0)
-        return scores_df
-
-    def score(self, val, fcst, metrics=None):
-        fcst_ex = fcst.merge(val[[self.time_col, self.target_col]], on="date")
-        y = self.get_indexed_series(fcst_ex, self.target_col)
-        y_fcst = self.get_indexed_series(fcst_ex, self.target_col + "_fcst")
-        scores_dict = dict()
-        for metric in metrics:
-            scores_dict[metric.__name__] = metric(y, y_fcst)
-        scores_df = pd.DataFrame(scores_dict, index=[0])
-        return scores_df
-
 
 @dataclass
 class Univariate(SingleTS):
@@ -112,6 +88,33 @@ class Univariate(SingleTS):
             ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
         plt.legend()
 
+    def score(self, val, fcst, metrics=None):
+        fcst_ex = fcst.merge(val[[self.time_col, self.target_col]], on="date")
+        y = self.get_indexed_series(fcst_ex, self.target_col)
+        y_fcst = self.get_indexed_series(fcst_ex, self.target_col + "_fcst")
+        scores_dict = dict()
+        for metric in metrics:
+            scores_dict[metric.__name__] = metric(y, y_fcst)
+        scores_df = pd.DataFrame(scores_dict, index=[0])
+        return scores_df
+
+    def score_cv(self, val, hfcst, metrics=None, agg=None):
+        if metrics is None:
+            metrics = [metric_mae]
+        hfcst_ex = [fcst.merge(val[[self.time_col, self.target_col]], on="date") for fcst in hfcst]
+        scores_list = []
+        for fcst in hfcst_ex:
+            y = self.get_indexed_series(fcst, self.target_col)
+            y_fcst = self.get_indexed_series(fcst, self.target_col + "_fcst")
+            step_scores = dict()
+            for metric in metrics:
+                step_scores[metric.__name__] = metric(y, y_fcst)
+            scores_list.append(pd.Series(step_scores))
+        scores_df = pd.DataFrame(scores_list)
+        if agg is not None:
+            return scores_df.apply(agg, axis=0)
+        return scores_df
+
 
 @dataclass
 class Multivariate(SingleTS):
@@ -141,6 +144,56 @@ class Naive(Univariate):
     def predict(self, future):
         fh = len(future)
         future[self.target_col + "_fcst"] = np.array([self.last] * fh)
+        return future
+
+
+@dataclass
+class ARIMA(Univariate):
+    order: tuple = (0, 0, 0)
+    seasonal_order: tuple = (0, 0, 0, 0)
+    trend: Optional[str] = None
+    arima_params: dict = field(default_factory=dict)
+    fit_params: dict = field(default_factory=dict)
+
+    def fit(self, data):
+        self.data = data.copy()
+        y = self.get_indexed_series(data, self.target_col)
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(data, self.regressor_cols)
+        self.model = ARIMAModel(
+            endog=y, 
+            exog=X, 
+            order=self.order, 
+            seasonal_order=self.seasonal_order, 
+            trend=self.trend, 
+            **self.arima_params,
+        )
+        self.model_fit = self.model.fit(**self.fit_params)
+        return self
+
+    def predict(self, future, conf_int=None):
+        #future = future.copy()
+        alpha = 0.05
+        if conf_int is not None:
+            alpha = 1 - conf_int
+        fh = len(future)
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(future, self.regressor_cols)
+        fcst = self.model_fit.get_forecast(steps=fh, exog=X).summary_frame(alpha=alpha)
+        fcst.columns.name = None
+        fcst.index.name = self.time_col
+        fcst = fcst.drop(columns=["mean_se"])
+        fcst = fcst.rename(
+            columns={
+                "mean": self.target_col + "_fcst", 
+                "mean_ci_lower": self.target_col + "_lower", 
+                "mean_ci_upper": self.target_col + "_upper"}
+        )
+        future = fcst.reset_index().copy()
+        if conf_int is None:
+            return future[[self.target_col + "_fcst"]]
         return future
 
 
@@ -177,7 +230,7 @@ class AutoARIMA(Univariate):
 
 
 @dataclass
-class Regression(Univariate):
+class ScikitRegression(Univariate):
     model: Optional[ScikitModel] = None
     scaler: Optional[ScikitScaler] = None
     n_lags: Optional[int] = None
