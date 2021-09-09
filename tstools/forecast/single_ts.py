@@ -1,16 +1,20 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Union
 from tstools.typing import ScikitModel, ScikitScaler
 from tstools.metrics import mae as metric_mae
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pmdarima as pm
 from tqdm import tqdm
+
+# statsmodels 0.12.2
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.tsa.arima.model import ARIMA as ARIMAModel
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+
+# pmdarima 1.8.2
+import pmdarima as pm
 
 
 @dataclass
@@ -69,17 +73,26 @@ class Univariate(SingleTS):
         if not isinstance(self.freq, str):
             raise Exception("freq should be a string")
 
-    def plot_fcst(self, fcst, test=None, plot_history=True, style="-"):
+    def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-"):
         target_fcst = self.target_col + "_fcst"
         target_lower = self.target_col + "_lower"
         target_upper = self.target_col + "_upper"
         f, ax = plt.subplots()
         if plot_history:
-            y = self.get_indexed_series(self.data, self.target_col)
-            y.plot(ax=ax, style=style, color="black")
+            if train is not None:
+                y = self.get_indexed_series(train, self.target_col)
+            elif hasattr(self, "data"):
+                y = self.get_indexed_series(self.data, self.target_col)
+            else:
+                raise Exception(
+                    "Model has no historic data to plot. "
+                    "Try with plot_history=False, "
+                    "or use 'train' argument to supply train data."
+                )
+            y.plot(ax=ax, style=style, color="black", label=self.target_col + "_train")
         if test is not None:
             y_test = self.get_indexed_series(test, self.target_col)
-            y_test.plot(ax=ax, style=style, color="orange")
+            y_test.plot(ax=ax, style=style, color="orange", label=self.target_col + "_test")
         y_fcst = self.get_indexed_series(fcst, target_fcst)
         y_fcst.plot(ax=ax, style=style, color="blue")
         if target_lower in fcst.columns and target_upper in fcst.columns:
@@ -135,15 +148,48 @@ class Multivariate(SingleTS):
 
 
 @dataclass
-class Naive(Univariate):
+class AutoRegression(Univariate):
+    lags: Union[int, List[int]] = 1
+    trend: str = 'c'
+    seasonal: bool = False
+    period: Optional[int] = None
+    autoreg_params: dict = field(default_factory=dict)
+    fit_params: dict = field(default_factory=dict)
+
     def fit(self, data):
         self.data = data.copy()
-        self.last = data[self.target_col].iloc[-1]
+        y = self.get_indexed_series(data, self.target_col)
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(data, self.regressor_cols)
+        self.model = AutoReg(
+            endog=y,
+            exog=X,
+            lags=self.lags,
+            trend=self.trend,
+            period=self.period,
+            **self.autoreg_params,
+        )
+        self.model_fit = self.model.fit(**self.fit_params)
         return self
 
-    def predict(self, future):
-        fh = len(future)
-        future[self.target_col + "_fcst"] = np.array([self.last] * fh)
+    def predict(self, future, conf_int=None):
+        future = future.copy()
+        alpha = 0.05
+        if conf_int is not None:
+            alpha = 1 - conf_int
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(future, self.regressor_cols)
+        fcst = fcst = self.model_fit.get_prediction(
+            start=future[self.time_col].iloc[0],
+            end=future[self.time_col].iloc[-1],
+            exog_oos=X,
+        ).summary_frame(alpha=alpha)
+        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+        if conf_int is not None:
+            future[self.target_col + "_lower"] = fcst["mean_ci_lower"].to_numpy()
+            future[self.target_col + "_upper"] = fcst["mean_ci_upper"].to_numpy()
         return future
 
 
@@ -162,18 +208,18 @@ class ARIMA(Univariate):
         if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
         self.model = ARIMAModel(
-            endog=y, 
-            exog=X, 
-            order=self.order, 
-            seasonal_order=self.seasonal_order, 
-            trend=self.trend, 
+            endog=y,
+            exog=X,
+            order=self.order,
+            seasonal_order=self.seasonal_order,
+            trend=self.trend,
             **self.arima_params,
         )
         self.model_fit = self.model.fit(**self.fit_params)
         return self
 
     def predict(self, future, conf_int=None):
-        #future = future.copy()
+        future = future.copy()
         alpha = 0.05
         if conf_int is not None:
             alpha = 1 - conf_int
@@ -182,18 +228,123 @@ class ARIMA(Univariate):
         if self.regressor_cols is not None:
             X = self.get_indexed_series(future, self.regressor_cols)
         fcst = self.model_fit.get_forecast(steps=fh, exog=X).summary_frame(alpha=alpha)
-        fcst.columns.name = None
-        fcst.index.name = self.time_col
-        fcst = fcst.drop(columns=["mean_se"])
-        fcst = fcst.rename(
-            columns={
-                "mean": self.target_col + "_fcst", 
-                "mean_ci_lower": self.target_col + "_lower", 
-                "mean_ci_upper": self.target_col + "_upper"}
+        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+        if conf_int is not None:
+            future[self.target_col + "_lower"] = fcst["mean_ci_lower"].to_numpy()
+            future[self.target_col + "_upper"] = fcst["mean_ci_upper"].to_numpy()
+        return future
+
+
+@dataclass
+class ETS(Univariate):
+    error: str = 'add'
+    trend: str = None
+    damped_trend: bool = False
+    seasonal: str = None
+    seasonal_periods: int = None
+    ets_params: dict = field(default_factory=dict)
+    fit_params: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.regressor_cols is not None:
+            raise Exception("ETS model does not accept regressors")
+
+    def fit(self, data):
+        self.data = data.copy()
+        y = self.get_indexed_series(data, self.target_col)
+        self.model = ETSModel(
+            endog=y,
+            error=self.error,
+            trend=self.trend,
+            damped_trend=self.damped_trend,
+            seasonal=self.seasonal,
+            **self.ets_params,
         )
-        future = fcst.reset_index().copy()
-        if conf_int is None:
-            return future[[self.target_col + "_fcst"]]
+        self.model_fit = self.model.fit(**self.fit_params)
+        return self
+
+    def predict(self, future, conf_int=None):
+        future = future.copy()
+        alpha = 0.05
+        if conf_int is not None:
+            alpha = 1 - conf_int
+        fcst = self.model_fit.get_prediction(
+            start=future[self.time_col].iloc[0], end=future[self.time_col].iloc[-1]).summary_frame(alpha=alpha)
+        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+        if conf_int is not None:
+            future[self.target_col + "_lower"] = fcst["pi_lower"].to_numpy()
+            future[self.target_col + "_upper"] = fcst["pi_upper"].to_numpy()
+        return future
+
+
+@dataclass
+class Naive(Univariate):
+    def __post_init__(self):
+        if self.regressor_cols is not None:
+            raise Exception("Naive model does not accept regressors")
+        self.model = ARIMA(
+            time_col=self.time_col,
+            target_col=self.target_col,
+            regressor_cols=None,
+            freq="W",
+            order=(0, 1, 0),
+        )
+
+    def fit(self, data):
+        self.data = data.copy()
+        self.model.fit(data)
+        return self
+
+    def predict(self, future, conf_int=None):
+        future = self.model.predict(future, conf_int)
+        return future
+
+
+@dataclass
+class Drift(Univariate):
+    def __post_init__(self):
+        if self.regressor_cols is not None:
+            raise Exception("Drift model does not accept regressors")
+        self.model = ARIMA(
+            time_col=self.time_col,
+            target_col=self.target_col,
+            regressor_cols=None,
+            freq="W",
+            order=(0, 1, 0),
+            trend="t",
+        )
+
+    def fit(self, data):
+        self.data = data.copy()
+        self.model.fit(data)
+        return self
+
+    def predict(self, future, conf_int=None):
+        future = self.model.predict(future, conf_int)
+        return future
+
+
+@dataclass
+class Mean(Univariate):
+    def __post_init__(self):
+        if self.regressor_cols is not None:
+            raise Exception("Mean model does not accept regressors")
+        self.model = ARIMA(
+            time_col=self.time_col,
+            target_col=self.target_col,
+            regressor_cols=None,
+            freq="W",
+            order=(0, 0, 0),
+            trend="c",
+        )
+
+    def fit(self, data):
+        self.data = data.copy()
+        self.model.fit(data)
+        return self
+
+    def predict(self, future, conf_int=None):
+        future = self.model.predict(future, conf_int)
         return future
 
 
@@ -236,8 +387,8 @@ class ScikitRegression(Univariate):
     n_lags: Optional[int] = None
 
     def build_lags(self, ts):
-        lags = pd.concat([ts.shift(i) for i in range(self.n_lags + 1)], axis=1).dropna()
-        lags.columns = [ts.name + f"_lag_{i}" for i in range(self.n_lags + 1)]
+        lags = pd.concat([ts.shift(i) for i in range(self.n_lags)], axis=1).dropna()
+        lags.columns = [ts.name + f"_lag_{i}" for i in range(self.n_lags)]
         return lags
 
     def build_target(self, ts):
@@ -275,7 +426,7 @@ class ScikitRegression(Univariate):
         for i, row in future.iterrows():
             X_components = []
             if self.n_lags is not None:
-                lags = np.flip(ts[-self.n_lags - 1:].reshape(1, -1))
+                lags = np.flip(ts[-self.n_lags:].reshape(1, -1))
                 X_components.append(lags)
             if extra_regressors is not None:
                 reg = extra_regressors[i].reshape(1, -1)
