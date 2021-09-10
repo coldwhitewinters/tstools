@@ -74,11 +74,11 @@ class Univariate(BaseSingleSeries):
         if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
             raise Exception("regressors_cols should be a List or None")
 
-    def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-"):
+    def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-", figsize=None):
+        f, ax = plt.subplots(figsize=figsize)
         target_fcst = self.target_col + "_fcst"
         target_lower = self.target_col + "_lower"
         target_upper = self.target_col + "_upper"
-        f, ax = plt.subplots()
         if plot_history:
             if train is not None:
                 y = self.get_indexed_series(train, self.target_col)
@@ -130,44 +130,47 @@ class Univariate(BaseSingleSeries):
         return scores_df
 
 
-# @dataclass
-# class Multivariate(BaseSingleSeries):
-#     target_col: List[str] = None
+@dataclass
+class Multivariate(BaseSingleSeries):
+    target_col: List[str] = None
 
-#     def __post_init__(self):
-#         if self.target_col is None:
-#             raise Exception("A target column must be provided.")
-#         if not isinstance(self.time_col, str):
-#             raise Exception("time_col should be a string")
-#         if not isinstance(self.target_col, list):
-#             raise Exception("target_col should be a list")
-#         if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
-#             raise Exception("regressors_cols should be a List or None")
+    def __post_init__(self):
+        if self.target_col is None:
+            raise Exception("A target column must be provided.")
+        if not isinstance(self.time_col, str):
+            raise Exception("time_col should be a string")
+        if not isinstance(self.target_col, list):
+            raise Exception("target_col should be a list")
+        if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
+            raise Exception("regressors_cols should be a List or None")
 
-#     def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-"):
-#         target_fcst = self.target_col + "_fcst"
-#         target_lower = self.target_col + "_lower"
-#         target_upper = self.target_col + "_upper"
-#         f, ax = plt.subplots()
-#         if plot_history:
-#             if train is not None:
-#                 y = self.get_indexed_series(train, self.target_col)
-#             elif hasattr(self, "data"):
-#                 y = self.get_indexed_series(self.data, self.target_col)
-#             else:
-#                 raise Exception(
-#                     "Model has no historic data to plot. "
-#                     "Try with plot_history=False, "
-#                     "or use 'train' argument to supply train data."
-#                 )
-#             y.plot(ax=ax, style=style, color="black", label=self.target_col + "_train")
-#         if test is not None:
-#             y_test = self.get_indexed_series(test, self.target_col)
-#             y_test.plot(ax=ax, style=style, color="orange", label=self.target_col + "_test")
-#         y_fcst = self.get_indexed_series(fcst, target_fcst)
-#         y_fcst.plot(ax=ax, style=style, color="blue")
-#         if target_lower in fcst.columns and target_upper in fcst.columns:
-#             y_lower = self.get_indexed_series(fcst, target_lower)
-#             y_upper = self.get_indexed_series(fcst, target_upper)
-#             ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
-#         plt.legend()
+    def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-", figsize=None):
+        f, axs = plt.subplots(nrows=len(self.target_col), figsize=figsize)
+        for target, ax in zip(self.target_col, axs):
+            target_fcst = target + "_fcst"
+            target_lower = target + "_lower"
+            target_upper = target + "_upper"
+
+            if plot_history:
+                if train is not None:
+                    y = self.get_indexed_series(train, target)
+                elif hasattr(self, "data"):
+                    y = self.get_indexed_series(self.data, target)
+                else:
+                    raise Exception(
+                        "Model has no historic data to plot. "
+                        "Try with plot_history=False, "
+                        "or use 'train' argument to supply train data."
+                    )
+                y.plot(ax=ax, style=style, color="black", label=target + "_train")
+            if test is not None:
+                y_test = self.get_indexed_series(test, target)
+                y_test.plot(ax=ax, style=style, color="orange", label=target + "_test")
+            y_fcst = self.get_indexed_series(fcst, target_fcst)
+            y_fcst.plot(ax=ax, style=style, color="blue")
+            if target_lower in fcst.columns and target_upper in fcst.columns:
+                y_lower = self.get_indexed_series(fcst, target_lower)
+                y_upper = self.get_indexed_series(fcst, target_upper)
+                ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
+            ax.legend()
+        plt.tight_layout()

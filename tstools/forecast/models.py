@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 from tstools.typing import ScikitModel, ScikitScaler
-from tstools.forecast.base import Univariate
+from tstools.forecast.base import Univariate, Multivariate
 
 import numpy as np
 import pandas as pd
@@ -10,6 +10,7 @@ import pandas as pd
 from statsmodels.tsa.ar_model import AutoReg
 from statsmodels.tsa.arima.model import ARIMA as ARIMAModel
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+from statsmodels.tsa.vector_ar.var_model import VAR as VARModel
 
 # pmdarima 1.8.2
 import pmdarima as pm
@@ -313,3 +314,47 @@ class ScikitRegression(Univariate):
     def residuals(self):
         resid = self.y_fit - self.model.predict(self.X_fit)
         return resid
+
+
+@dataclass
+class VAR(Multivariate):
+    maxlags: Optional[int] = None
+    trend: str = "c"
+    var_params: dict = field(default_factory=dict)
+    fit_params: dict = field(default_factory=dict)
+
+    def fit(self, data):
+        self.prefit(data)
+        y = self.get_indexed_series(data, self.target_col)
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(data, self.regressor_cols)
+        self.model = VARModel(
+            endog=y,
+            exog=X,
+            **self.var_params,
+        )
+        self.model_fit = self.model.fit(
+            maxlags=self.maxlags,
+            trend=self.trend,
+            **self.fit_params,
+        )
+        return self
+
+    def predict(self, future, conf_int=None):
+        future = future.copy()
+        alpha = 0.05
+        if conf_int is not None:
+            alpha = 1 - conf_int
+        fh = len(future)
+        y = self.get_indexed_series(self.data, self.target_col)
+        X = None
+        if self.regressor_cols is not None:
+            X = self.get_indexed_series(future, self.regressor_cols).to_numpy()
+        fcst = self.model_fit.forecast_interval(y.to_numpy(), exog_future=X, steps=fh, alpha=alpha)
+        for i, target in enumerate(self.target_col):
+            future[target + "_fcst"] = fcst[0][:, i]
+            if conf_int is not None:
+                future[target + "_lower"] = fcst[1][:, i]
+                future[target + "_upper"] = fcst[2][:, i]
+        return future
