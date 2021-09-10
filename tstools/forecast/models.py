@@ -25,7 +25,7 @@ class AutoRegression(Univariate):
     fit_params: dict = field(default_factory=dict)
 
     def fit(self, data):
-        self.data = data.copy()
+        self.prefit(data)
         y = self.get_indexed_series(data, self.target_col)
         X = None
         if self.regressor_cols is not None:
@@ -70,7 +70,7 @@ class ARIMA(Univariate):
     fit_params: dict = field(default_factory=dict)
 
     def fit(self, data):
-        self.data = data.copy()
+        self.prefit(data)
         y = self.get_indexed_series(data, self.target_col)
         X = None
         if self.regressor_cols is not None:
@@ -109,7 +109,7 @@ class AutoARIMA(Univariate):
     fit_params: dict = field(default_factory=dict)
 
     def fit(self, data):
-        self.data = data.copy()
+        self.prefit(data)
         self.model = pm.AutoARIMA(**self.arima_params)
         y = self.get_indexed_series(data, self.target_col)
         X = None
@@ -150,7 +150,7 @@ class ETS(Univariate):
             raise Exception("ETS model does not accept regressors")
 
     def fit(self, data):
-        self.data = data.copy()
+        self.prefit(data)
         y = self.get_indexed_series(data, self.target_col)
         self.model = ETSModel(
             endog=y,
@@ -186,13 +186,14 @@ class Naive(Univariate):
             time_col=self.time_col,
             target_col=self.target_col,
             regressor_cols=None,
-            freq="W",
+            freq=self.freq,
             order=(0, 1, 0),
         )
 
     def fit(self, data):
-        self.data = data.copy()
         self.model.fit(data)
+        self.data = self.model.data
+        self.freq = self.model.freq
         return self
 
     def predict(self, future, conf_int=None):
@@ -209,14 +210,15 @@ class Drift(Univariate):
             time_col=self.time_col,
             target_col=self.target_col,
             regressor_cols=None,
-            freq="W",
+            freq=self.freq,
             order=(0, 1, 0),
             trend="t",
         )
 
     def fit(self, data):
-        self.data = data.copy()
         self.model.fit(data)
+        self.data = self.model.data
+        self.freq = self.model.freq
         return self
 
     def predict(self, future, conf_int=None):
@@ -233,14 +235,15 @@ class Mean(Univariate):
             time_col=self.time_col,
             target_col=self.target_col,
             regressor_cols=None,
-            freq="W",
+            freq=self.freq,
             order=(0, 0, 0),
             trend="c",
         )
 
     def fit(self, data):
-        self.data = data.copy()
         self.model.fit(data)
+        self.data = self.model.data
+        self.freq = self.model.freq
         return self
 
     def predict(self, future, conf_int=None):
@@ -265,7 +268,7 @@ class ScikitRegression(Univariate):
         return target
 
     def fit(self, data):
-        self.data = data.copy()
+        self.prefit(data)
         ts = self.get_indexed_series(data, self.target_col)
         lags = None
         extra_regressors = None

@@ -9,13 +9,21 @@ from tstools.metrics import mae as metric_mae
 
 @dataclass
 class BaseSingleSeries:
+    time_col: str
+    freq: Optional[str] = None
+    regressor_cols: Optional[List[str]] = None
+
+    def infer_frequency(self, data):
+        freq = pd.infer_freq(data[self.time_col])
+        return freq
+
     def get_indexed_series(self, data, col):
         ts = data.set_index(self.time_col).asfreq(self.freq)[col].copy()
         return ts
 
     def get_future_dataframe(self, data, fh=1):
         data_end = data[self.time_col].iloc[-1]
-        future_start = data_end + pd.Timedelta(1, self.freq)
+        future_start = data_end + pd.tseries.frequencies.to_offset(self.freq)  # Beware of this.
         future_range = pd.date_range(start=future_start, periods=fh, freq=self.freq, name=self.time_col)
         future_df = pd.DataFrame(future_range)
         return future_df
@@ -35,6 +43,7 @@ class BaseSingleSeries:
         return cv_slices
 
     def historical_forecasts(self, data, fh=1, start=0.5, stride=1, progress=True):
+        self.prefit(data)
         hfcst = []
         cv_slices = self.get_cv_slices(data, fh, start, stride)
         if progress:
@@ -45,23 +54,25 @@ class BaseSingleSeries:
             hfcst.append(fcst)
         return hfcst
 
+    def prefit(self, data):
+        self.data = data.copy()
+        if self.freq is None:
+            self.freq = self.infer_frequency(data)
+
 
 @dataclass
 class Univariate(BaseSingleSeries):
-    time_col: str
-    target_col: str
-    regressor_cols: Optional[List[str]]
-    freq: str
+    target_col: Optional[str] = None
 
     def __post_init__(self):
+        if self.target_col is None:
+            raise Exception("A target column must be provided.")
         if not isinstance(self.time_col, str):
             raise Exception("time_col should be a string")
         if not isinstance(self.target_col, str):
             raise Exception("target_col should be a string")
         if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
             raise Exception("regressors_cols should be a List or None")
-        if not isinstance(self.freq, str):
-            raise Exception("freq should be a string")
 
     def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-"):
         target_fcst = self.target_col + "_fcst"
@@ -119,19 +130,44 @@ class Univariate(BaseSingleSeries):
         return scores_df
 
 
-@dataclass
-class Multivariate(BaseSingleSeries):
-    time_col: str
-    target_col: List[str]
-    regressor_cols: Optional[List[str]]
-    freq: str
+# @dataclass
+# class Multivariate(BaseSingleSeries):
+#     target_col: List[str] = None
 
-    def __post_init__(self):
-        if not isinstance(self.time_col, str):
-            raise Exception("time_col should be a string")
-        if not isinstance(self.target_col, list):
-            raise Exception("target_col should be a list")
-        if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
-            raise Exception("regressors_cols should be a List or None")
-        if not isinstance(self.freq, str):
-            raise Exception("freq should be a string")
+#     def __post_init__(self):
+#         if self.target_col is None:
+#             raise Exception("A target column must be provided.")
+#         if not isinstance(self.time_col, str):
+#             raise Exception("time_col should be a string")
+#         if not isinstance(self.target_col, list):
+#             raise Exception("target_col should be a list")
+#         if not isinstance(self.regressor_cols, list) and self.regressor_cols is not None:
+#             raise Exception("regressors_cols should be a List or None")
+
+#     def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-"):
+#         target_fcst = self.target_col + "_fcst"
+#         target_lower = self.target_col + "_lower"
+#         target_upper = self.target_col + "_upper"
+#         f, ax = plt.subplots()
+#         if plot_history:
+#             if train is not None:
+#                 y = self.get_indexed_series(train, self.target_col)
+#             elif hasattr(self, "data"):
+#                 y = self.get_indexed_series(self.data, self.target_col)
+#             else:
+#                 raise Exception(
+#                     "Model has no historic data to plot. "
+#                     "Try with plot_history=False, "
+#                     "or use 'train' argument to supply train data."
+#                 )
+#             y.plot(ax=ax, style=style, color="black", label=self.target_col + "_train")
+#         if test is not None:
+#             y_test = self.get_indexed_series(test, self.target_col)
+#             y_test.plot(ax=ax, style=style, color="orange", label=self.target_col + "_test")
+#         y_fcst = self.get_indexed_series(fcst, target_fcst)
+#         y_fcst.plot(ax=ax, style=style, color="blue")
+#         if target_lower in fcst.columns and target_upper in fcst.columns:
+#             y_lower = self.get_indexed_series(fcst, target_lower)
+#             y_upper = self.get_indexed_series(fcst, target_upper)
+#             ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
+#         plt.legend()
