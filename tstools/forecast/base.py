@@ -102,7 +102,7 @@ class Univariate(BaseSingleSeries):
             ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
         plt.legend()
 
-    def score(self, val, fcst, metrics=None):
+    def score(self, fcst, val, metrics=None):
         fcst_ex = fcst.merge(val[[self.time_col, self.target_col]], on="date")
         y = self.get_indexed_series(fcst_ex, self.target_col)
         y_fcst = self.get_indexed_series(fcst_ex, self.target_col + "_fcst")
@@ -112,7 +112,7 @@ class Univariate(BaseSingleSeries):
         scores_df = pd.Series(scores_dict)
         return scores_df
 
-    def score_cv(self, val, hfcst, metrics=None, agg=None):
+    def score_cv(self, hfcst, val, metrics=None, agg=None):
         if metrics is None:
             metrics = [metric_mae]
         hfcst_ex = [fcst.merge(val[[self.time_col, self.target_col]], on="date") for fcst in hfcst]
@@ -146,6 +146,8 @@ class Multivariate(BaseSingleSeries):
 
     def plot_fcst(self, fcst, train=None, test=None, plot_history=True, style="-", figsize=None):
         f, axs = plt.subplots(nrows=len(self.target_col), figsize=figsize)
+        if len(self.target_col) == 1:
+            axs = [axs]
         for target, ax in zip(self.target_col, axs):
             target_fcst = target + "_fcst"
             target_lower = target + "_lower"
@@ -174,3 +176,36 @@ class Multivariate(BaseSingleSeries):
                 ax.fill_between(x=y_fcst.index, y1=y_lower, y2=y_upper, alpha=0.8, color="lightblue")
             ax.legend()
         plt.tight_layout()
+
+    def score(self, fcst, val, metrics=None):
+        fcst_ex = fcst.merge(val[[self.time_col] + self.target_col], on="date")
+        target_scores = dict()
+        for target in self.target_col:
+            y = self.get_indexed_series(fcst_ex, target)
+            y_fcst = self.get_indexed_series(fcst_ex, target + "_fcst")
+            scores_dict = dict()
+            for metric in metrics:
+                scores_dict[metric.__name__] = metric(y, y_fcst)
+            target_scores[target] = pd.Series(scores_dict)
+        scores_df = pd.concat(target_scores, axis=1)
+        return scores_df
+
+    def score_cv(self, hfcst, val, metrics=None, agg=None):
+        if metrics is None:
+            metrics = [metric_mae]
+        hfcst_ex = [fcst.merge(val[[self.time_col] + self.target_col], on="date") for fcst in hfcst]
+        target_scores = dict()
+        for target in self.target_col:
+            scores_list = []
+            for fcst in hfcst_ex:
+                y = self.get_indexed_series(fcst, target)
+                y_fcst = self.get_indexed_series(fcst, target + "_fcst")
+                step_scores = dict()
+                for metric in metrics:
+                    step_scores[metric.__name__] = metric(y, y_fcst)
+                scores_list.append(pd.Series(step_scores))
+            target_scores[target] = pd.DataFrame(scores_list)
+        scores_df = pd.concat(target_scores, axis=1)
+        if agg is not None:
+            return scores_df.apply(agg, axis=0).unstack(level=0)
+        return scores_df
