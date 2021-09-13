@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 from tstools.typing import ScikitModel, ScikitScaler
-from tstools.forecast.base import Univariate, Multivariate
+from tstools.forecast.base import BaseSingleTS, BaseUnivariate
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ import pmdarima as pm
 
 
 @dataclass
-class AutoRegression(Univariate):
+class AutoRegression(BaseUnivariate):
     lags: Union[int, List[int]] = 1
     trend: str = 'c'
     seasonal: bool = False
@@ -27,7 +27,7 @@ class AutoRegression(Univariate):
 
     def fit(self, data):
         self.prefit(data)
-        y = self.get_indexed_series(data, self.target_col)
+        y = self.get_indexed_series(data, self.target)
         X = None
         if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
@@ -55,15 +55,15 @@ class AutoRegression(Univariate):
             end=future[self.time_col].iloc[-1],
             exog_oos=X,
         ).summary_frame(alpha=alpha)
-        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+        future[self.target + "_fcst"] = fcst["mean"].to_numpy()
         if conf_int is not None:
-            future[self.target_col + "_lower"] = fcst["mean_ci_lower"].to_numpy()
-            future[self.target_col + "_upper"] = fcst["mean_ci_upper"].to_numpy()
+            future[self.target + "_lower"] = fcst["mean_ci_lower"].to_numpy()
+            future[self.target + "_upper"] = fcst["mean_ci_upper"].to_numpy()
         return future
 
 
 @dataclass
-class ARIMA(Univariate):
+class ARIMA(BaseUnivariate):
     order: tuple = (0, 0, 0)
     seasonal_order: tuple = (0, 0, 0, 0)
     trend: Optional[str] = None
@@ -72,7 +72,7 @@ class ARIMA(Univariate):
 
     def fit(self, data):
         self.prefit(data)
-        y = self.get_indexed_series(data, self.target_col)
+        y = self.get_indexed_series(data, self.target)
         X = None
         if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
@@ -97,22 +97,22 @@ class ARIMA(Univariate):
         if self.regressor_cols is not None:
             X = self.get_indexed_series(future, self.regressor_cols)
         fcst = self.model_fit.get_forecast(steps=fh, exog=X).summary_frame(alpha=alpha)
-        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+        future[self.target + "_fcst"] = fcst["mean"].to_numpy()
         if conf_int is not None:
-            future[self.target_col + "_lower"] = fcst["mean_ci_lower"].to_numpy()
-            future[self.target_col + "_upper"] = fcst["mean_ci_upper"].to_numpy()
+            future[self.target + "_lower"] = fcst["mean_ci_lower"].to_numpy()
+            future[self.target + "_upper"] = fcst["mean_ci_upper"].to_numpy()
         return future
 
 
 @dataclass
-class AutoARIMA(Univariate):
+class AutoARIMA(BaseUnivariate):
     arima_params: dict = field(default_factory=dict)
     fit_params: dict = field(default_factory=dict)
 
     def fit(self, data):
         self.prefit(data)
         self.model = pm.AutoARIMA(**self.arima_params)
-        y = self.get_indexed_series(data, self.target_col)
+        y = self.get_indexed_series(data, self.target)
         X = None
         if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
@@ -127,17 +127,17 @@ class AutoARIMA(Univariate):
             X = self.get_indexed_series(future, self.regressor_cols)
         if conf_int is None:
             y_fcst = self.model.predict(n_periods=fh, X=X)
-            future[self.target_col + "_fcst"] = y_fcst
+            future[self.target + "_fcst"] = y_fcst
         else:
             y_fcst, y_conf = self.model.predict(n_periods=fh, X=X, return_conf_int=True, alpha=1-conf_int)
-            future[self.target_col + "_fcst"] = y_fcst
-            future[self.target_col + "_lower"] = y_conf[:, 0]
-            future[self.target_col + "_upper"] = y_conf[:, 1]
+            future[self.target + "_fcst"] = y_fcst
+            future[self.target + "_lower"] = y_conf[:, 0]
+            future[self.target + "_upper"] = y_conf[:, 1]
         return future
 
 
 @dataclass
-class ETS(Univariate):
+class ETS(BaseUnivariate):
     error: str = 'add'
     trend: str = None
     damped_trend: bool = False
@@ -153,7 +153,7 @@ class ETS(Univariate):
 
     def fit(self, data):
         self.prefit(data)
-        y = self.get_indexed_series(data, self.target_col)
+        y = self.get_indexed_series(data, self.target)
         self.model = ETSModel(
             endog=y,
             error=self.error,
@@ -171,23 +171,24 @@ class ETS(Univariate):
         if conf_int is not None:
             alpha = 1 - conf_int
         fcst = self.model_fit.get_prediction(
-            start=future[self.time_col].iloc[0], end=future[self.time_col].iloc[-1]).summary_frame(alpha=alpha)
-        future[self.target_col + "_fcst"] = fcst["mean"].to_numpy()
+            start=future[self.time_col].iloc[0],
+            end=future[self.time_col].iloc[-1]).summary_frame(alpha=alpha)
+        future[self.target + "_fcst"] = fcst["mean"].to_numpy()
         if conf_int is not None:
-            future[self.target_col + "_lower"] = fcst["pi_lower"].to_numpy()
-            future[self.target_col + "_upper"] = fcst["pi_upper"].to_numpy()
+            future[self.target + "_lower"] = fcst["pi_lower"].to_numpy()
+            future[self.target + "_upper"] = fcst["pi_upper"].to_numpy()
         return future
 
 
 @dataclass
-class Naive(Univariate):
+class Naive(BaseUnivariate):
     def __post_init__(self):
         super().__post_init__()
         if self.regressor_cols is not None:
             raise Exception("Naive model does not accept regressors")
         self.model = ARIMA(
             time_col=self.time_col,
-            target_col=self.target_col,
+            target_col=self.target_cols,
             regressor_cols=None,
             freq=self.freq,
             order=(0, 1, 0),
@@ -205,14 +206,14 @@ class Naive(Univariate):
 
 
 @dataclass
-class Drift(Univariate):
+class Drift(BaseUnivariate):
     def __post_init__(self):
         super().__post_init__()
         if self.regressor_cols is not None:
             raise Exception("Drift model does not accept regressors")
         self.model = ARIMA(
             time_col=self.time_col,
-            target_col=self.target_col,
+            target_col=self.target_cols,
             regressor_cols=None,
             freq=self.freq,
             order=(0, 1, 0),
@@ -231,14 +232,14 @@ class Drift(Univariate):
 
 
 @dataclass
-class Mean(Univariate):
+class Mean(BaseUnivariate):
     def __post_init__(self):
         super().__post_init__()
         if self.regressor_cols is not None:
             raise Exception("Mean model does not accept regressors")
         self.model = ARIMA(
             time_col=self.time_col,
-            target_col=self.target_col,
+            target_col=self.target_cols,
             regressor_cols=None,
             freq=self.freq,
             order=(0, 0, 0),
@@ -257,7 +258,7 @@ class Mean(Univariate):
 
 
 @dataclass
-class ScikitRegression(Univariate):
+class ScikitRegression(BaseUnivariate):
     model: Optional[ScikitModel] = None
     scaler: Optional[ScikitScaler] = None
     n_lags: Optional[int] = None
@@ -274,7 +275,7 @@ class ScikitRegression(Univariate):
 
     def fit(self, data):
         self.prefit(data)
-        ts = self.get_indexed_series(data, self.target_col)
+        ts = self.get_indexed_series(data, self.target)
         lags = None
         extra_regressors = None
         if self.n_lags is not None:
@@ -295,7 +296,7 @@ class ScikitRegression(Univariate):
     def predict(self, future):
         future = future.copy()
         fh = len(future)
-        ts = self.get_indexed_series(self.data, self.target_col).to_numpy()
+        ts = self.get_indexed_series(self.data, self.target).to_numpy()
         extra_regressors = None
         if self.regressor_cols is not None:
             extra_regressors = self.get_indexed_series(future, self.regressor_cols).to_numpy()
@@ -312,7 +313,7 @@ class ScikitRegression(Univariate):
                 X = self.scaler.transform(X)
             y_pred = self.model.predict(X)
             ts = np.append(ts, [y_pred])
-        future[self.target_col + "_fcst"] = ts[-fh:]
+        future[self.target + "_fcst"] = ts[-fh:]
         return future
 
     def residuals(self):
@@ -321,7 +322,7 @@ class ScikitRegression(Univariate):
 
 
 @dataclass
-class VAR(Multivariate):
+class VAR(BaseSingleTS):
     maxlags: Optional[int] = None
     trend: str = "c"
     var_params: dict = field(default_factory=dict)
@@ -329,7 +330,7 @@ class VAR(Multivariate):
 
     def fit(self, data):
         self.prefit(data)
-        y = self.get_indexed_series(data, self.target_col)
+        y = self.get_indexed_series(data, self.target_cols)
         X = None
         if self.regressor_cols is not None:
             X = self.get_indexed_series(data, self.regressor_cols)
@@ -351,12 +352,12 @@ class VAR(Multivariate):
         if conf_int is not None:
             alpha = 1 - conf_int
         fh = len(future)
-        y = self.get_indexed_series(self.data, self.target_col)
+        y = self.get_indexed_series(self.data, self.target_cols)
         X = None
         if self.regressor_cols is not None:
             X = self.get_indexed_series(future, self.regressor_cols).to_numpy()
         fcst = self.model_fit.forecast_interval(y.to_numpy(), exog_future=X, steps=fh, alpha=alpha)
-        for i, target in enumerate(self.target_col):
+        for i, target in enumerate(self.target_cols):
             future[target + "_fcst"] = fcst[0][:, i]
             if conf_int is not None:
                 future[target + "_lower"] = fcst[1][:, i]
@@ -374,9 +375,9 @@ class VAR(Multivariate):
 
 #     def __post_init__(self):
 #         super().__post_init__()
-#         if not len(self.target_col) == 1:
+#         if not len(self.target_cols) == 1:
 #             raise Exception("target_col should have a single target")
-#         self.target = self.target_col[0]
+#         self.target = self.target_cols[0]
 
 #     def fit(self, data):
 #         self.prefit(data)
