@@ -39,7 +39,8 @@ class BaseSingleTS:
 
     def get_future_dataframe(self, data, fh=1):
         data_end = data[self.time_col].iloc[-1]
-        future_start = data_end + pd.tseries.frequencies.to_offset(self.freq)  # Beware of this.
+        # Beware of the following line. The function 'to_offset' may change in the future.
+        future_start = data_end + pd.tseries.frequencies.to_offset(self.freq)
         future_range = pd.date_range(start=future_start, periods=fh, freq=self.freq, name=self.time_col)
         future_df = pd.DataFrame(future_range)
         return future_df
@@ -103,7 +104,7 @@ class BaseSingleTS:
         plt.tight_layout()
 
     def score(self, fcst, val, metrics=None):
-        fcst_ex = fcst.merge(val[[self.time_col] + self.target_cols], on="date")
+        fcst_ex = fcst.merge(val[[self.time_col] + self.target_cols], on=self.time_col)
         target_scores = dict()
         for target in self.target_cols:
             y = self.get_indexed_series(fcst_ex, target)
@@ -118,7 +119,7 @@ class BaseSingleTS:
     def score_cv(self, hfcst, val, metrics=None, agg=None):
         if metrics is None:
             metrics = [metric_mae]
-        hfcst_ex = [fcst.merge(val[[self.time_col] + self.target_cols], on="date") for fcst in hfcst]
+        hfcst_ex = [fcst.merge(val[[self.time_col] + self.target_cols], on=self.time_col) for fcst in hfcst]
         target_scores = dict()
         for target in self.target_cols:
             scores_list = []
